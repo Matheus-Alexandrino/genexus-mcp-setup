@@ -36,6 +36,51 @@ function Test-PythonAvailable {
     return (Test-CommandExists "python") -or (Test-CommandExists "pythonw") -or (Test-CommandExists "py")
 }
 
+$script:ClaudeCodeChecked = $false
+
+# Garante que o CLI 'claude' (Claude Code) esta disponivel nesta sessao do
+# PowerShell. Se nao estiver, oferece instalar via instalador nativo oficial
+# (https://claude.ai/install.ps1) e adiciona a pasta do binario ao PATH desta
+# sessao, para nao precisar reabrir o terminal.
+function Ensure-ClaudeCodeCli {
+    if ($script:ClaudeCodeChecked) { return (Test-CommandExists "claude") }
+    $script:ClaudeCodeChecked = $true
+
+    if (Test-CommandExists "claude") { return $true }
+
+    Write-Warn2 "CLI 'claude' (Claude Code) nao encontrado no PATH."
+    $answer = Read-Host "  Instalar agora via instalador nativo oficial (irm https://claude.ai/install.ps1)? (s/N)"
+    if ($answer -ne "s") {
+        Write-Warn2 "Ok, pulando instalacao do Claude Code. Registros que dependem dele serao pulados."
+        return $false
+    }
+
+    Write-Info "Instalando Claude Code (irm https://claude.ai/install.ps1 | iex)..."
+    try {
+        Invoke-Expression (Invoke-RestMethod "https://claude.ai/install.ps1")
+    }
+    catch {
+        Write-Err2 "Falha ao rodar o instalador: $_"
+        return $false
+    }
+
+    # Instalador nativo coloca o binario em $env:USERPROFILE\.local\bin\claude.exe;
+    # adiciona ao PATH desta sessao pra nao precisar reabrir o terminal.
+    $localBin = Join-Path $env:USERPROFILE ".local\bin"
+    if ((Test-Path $localBin) -and ($env:PATH -notlike "*$localBin*")) {
+        $env:PATH = "$localBin;$env:PATH"
+    }
+
+    if (Test-CommandExists "claude") {
+        Write-Ok "Claude Code instalado e disponivel nesta sessao."
+        return $true
+    }
+    else {
+        Write-Warn2 "Instalador rodou, mas 'claude' ainda nao aparece no PATH desta sessao. Abra um terminal novo e rode de novo esta opcao."
+        return $false
+    }
+}
+
 function Backup-ConfigFile {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
@@ -54,11 +99,23 @@ function Set-McpServerEntry {
         [string]$TopKey,
         [string]$ServerKey,
         [hashtable]$EntryValue,
-        [string]$ClientLabel
+        [string]$ClientLabel,
+        [string]$WingetId = $null
     )
 
     if (-not (Test-Path $ConfigPath)) {
         Write-Warn2 "$ClientLabel - config nao encontrado ($ConfigPath) - pulando"
+        if ($WingetId -and (Test-CommandExists "winget")) {
+            $answer = Read-Host "  $ClientLabel parece nao estar instalado. Instalar agora via winget? (s/N)"
+            if ($answer -eq "s") {
+                Write-Info "Instalando $ClientLabel via winget ($WingetId)..."
+                winget install --id $WingetId --silent --accept-package-agreements --accept-source-agreements
+                Write-Warn2 "Abra o $ClientLabel uma vez (pra ele criar o arquivo de config) e rode esta opcao de novo pra registrar o MCP."
+            }
+        }
+        elseif ($WingetId) {
+            Write-Warn2 "winget nao encontrado nesta maquina - instale o $ClientLabel manualmente e rode esta opcao de novo."
+        }
         return
     }
 
@@ -147,9 +204,31 @@ function Install-GxObjGen {
         return
     }
 
+    # O install.ps1 do GxObjGen so detecta instalacoes nos caminhos padrao
+    # (C:\Program Files (x86)\GeneXus\GeneXus15\17\18). Se nenhuma delas
+    # existir, pede a pasta manualmente e repassa via -GxDir.
+    $standardPaths = @(
+        "C:\Program Files (x86)\GeneXus\GeneXus15",
+        "C:\Program Files (x86)\GeneXus\GeneXus17",
+        "C:\Program Files (x86)\GeneXus\GeneXus18"
+    ) | Where-Object { Test-Path (Join-Path $_ "genexus.exe") }
+
+    $installArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$installScript`"")
+    if (-not $standardPaths) {
+        Write-Warn2 "Nenhuma instalacao padrao do GeneXus encontrada em Program Files."
+        $customPath = Read-Host "  Informe a pasta onde fica o genexus.exe (ex.: C:\GX\15u12)"
+        if ($customPath -and (Test-Path (Join-Path $customPath "genexus.exe"))) {
+            $installArgs += @("-GxDir", "`"$customPath`"")
+        }
+        else {
+            Write-Err2 "Nao encontrei genexus.exe em '$customPath' - abortando esta opcao"
+            return
+        }
+    }
+
     Write-Info "Rodando install.ps1 como Administrador (UAC vai pedir confirmacao)..."
     $proc = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$installScript`"" `
+        -ArgumentList $installArgs `
         -Verb RunAs -Wait -PassThru
     if ($proc.ExitCode -ne 0) {
         Write-Warn2 "install.ps1 terminou com codigo $($proc.ExitCode) - confira a saida da janela elevada"
@@ -171,22 +250,24 @@ function Install-GxObjGen {
         return
     }
 
-    if (Test-CommandExists "claude") {
+    if (Ensure-ClaudeCodeCli) {
         Write-Info "Registrando no Claude Code..."
         claude mcp add --transport http genexus $mcpUrl
     }
     else {
-        Write-Warn2 "CLI 'claude' nao encontrado no PATH - pulando registro no Claude Code"
+        Write-Warn2 "Pulando registro no Claude Code (CLI nao instalado)"
     }
 
     # Claude Desktop nao aceita "url" nativo em claude_desktop_config.json;
     # usa o wrapper mcp-remote (via npx) para servidores HTTP.
     Set-McpServerEntry -ConfigPath $ClaudeDesktopConfig -TopKey "mcpServers" -ServerKey "genexus" `
-        -EntryValue @{ command = "npx"; args = @("mcp-remote", $mcpUrl) } -ClientLabel "Claude Desktop"
+        -EntryValue @{ command = "npx"; args = @("mcp-remote", $mcpUrl) } -ClientLabel "Claude Desktop" `
+        -WingetId "Anthropic.Claude"
 
     # VS Code usa "servers" + {type, url} nativamente.
     Set-McpServerEntry -ConfigPath $VSCodeConfig -TopKey "servers" -ServerKey "genexus" `
-        -EntryValue @{ type = "http"; url = $mcpUrl } -ClientLabel "VS Code"
+        -EntryValue @{ type = "http"; url = $mcpUrl } -ClientLabel "VS Code" `
+        -WingetId "Microsoft.VisualStudioCode"
 
     Write-Host ""
     Write-Ok "GxObjGen configurado. Abra o GeneXus com a KB e peca 'gx_whoami' para confirmar."
@@ -203,6 +284,8 @@ function Install-GenexusMcp {
         Write-Err2 "npx nao encontrado no PATH (Node.js instalado?) - abortando esta opcao"
         return
     }
+
+    Ensure-ClaudeCodeCli | Out-Null
 
     $clients = @("claude-code", "claude-desktop-win", "vscode")
     foreach ($client in $clients) {
