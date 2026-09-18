@@ -386,6 +386,7 @@ function Install-GxObjGen {
 
     Write-Host ""
     Write-Ok "GxObjGen configurado. Abra o GeneXus com a KB e peca 'gx_whoami' para confirmar."
+    Write-Info "Por padrao a escrita na KB fica desligada - use a opcao [6] do menu quando precisar habilitar."
 }
 
 # ---------------------------------------------------------------------------
@@ -454,6 +455,16 @@ function Show-Status {
     }
     else {
         Write-Warn2 "sql.exe nao encontrado (nem no PATH, nem em cache) - rode a opcao [5] do menu para configurar"
+    }
+
+    Write-Host ""
+    Write-Info "Escrita na KB (GXOBJGEN_WRITE)..."
+    $writeMode = [Environment]::GetEnvironmentVariable("GXOBJGEN_WRITE", "User")
+    if ($writeMode -eq "1") {
+        Write-Warn2 "HABILITADA nesta conta - o agente pode criar/editar/apagar objetos na KB. Use a opcao [6] para desligar."
+    }
+    else {
+        Write-Ok "Desabilitada (leitura por padrao) - use a opcao [6] do menu para habilitar quando precisar."
     }
 }
 
@@ -704,6 +715,54 @@ function Install-OracleSqlclMcp {
 }
 
 # ---------------------------------------------------------------------------
+# Opcao 6: habilita/desabilita escrita na KB do GxObjGen (GXOBJGEN_WRITE=1).
+# Por padrao o GxObjGen e deny-by-default: sem essa variavel, o agente so
+# le a KB. Antes isso era 100% manual (o dev tinha que setar a variavel
+# fora do script); agora o script grava/apaga ela como variavel de ambiente
+# do USUARIO (igual faz com o PATH do Claude Code) e avisa o Windows da
+# mudanca (broadcast) - so falta fechar e reabrir o GeneXus pra valer, ja
+# que o GxObjGen so le essa variavel no momento em que o genexus.exe inicia.
+# ---------------------------------------------------------------------------
+function Set-GxObjGenWriteMode {
+    Write-Host ""
+    Write-Host "== Escrita na KB (GXOBJGEN_WRITE) ==" -ForegroundColor Magenta
+
+    $current = [Environment]::GetEnvironmentVariable("GXOBJGEN_WRITE", "User")
+    $isEnabled = ($current -eq "1")
+
+    if ($isEnabled) {
+        Write-Info "Escrita esta HABILITADA nesta conta do Windows (GXOBJGEN_WRITE=1)."
+        $answer = Read-Host "  Desabilitar agora e voltar para leitura por padrao? (s/N)"
+        if ($answer -eq "s") {
+            [Environment]::SetEnvironmentVariable("GXOBJGEN_WRITE", $null, "User")
+            Broadcast-EnvironmentChange
+            Write-Ok "Escrita desabilitada (GXOBJGEN_WRITE removida)."
+            Write-Warn2 "Feche e reabra o GeneXus para a mudanca valer - a variavel so e lida quando o genexus.exe inicia."
+        }
+        else {
+            Write-Info "Mantido como esta - escrita continua habilitada."
+        }
+        return
+    }
+
+    Write-Warn2 "Por padrao a escrita na KB fica DESLIGADA (deny-by-default) - o agente so consegue"
+    Write-Warn2 "criar/editar/apagar objetos com GXOBJGEN_WRITE=1 definida ANTES de abrir o GeneXus."
+    Write-Warn2 "Habilitar isso permanentemente nesta conta aumenta o risco: qualquer sessao do agente"
+    Write-Warn2 "(ou de outra pessoa usando esta conta do Windows) podera escrever na KB sem aviso extra."
+    $answer = Read-Host "  Habilitar escrita agora (GXOBJGEN_WRITE=1, permanente nesta conta)? (s/N)"
+    if ($answer -ne "s") {
+        Write-Info "Ok, mantendo leitura por padrao."
+        return
+    }
+
+    [Environment]::SetEnvironmentVariable("GXOBJGEN_WRITE", "1", "User")
+    Broadcast-EnvironmentChange
+    Write-Ok "GXOBJGEN_WRITE=1 gravada como variavel de ambiente do usuario (permanente) e o Windows foi avisado da mudanca."
+    Write-Warn2 "Feche e reabra o GeneXus para a mudanca valer - a variavel so e lida quando o genexus.exe inicia."
+    Write-Warn2 "Para desligar de novo, rode esta opcao [6] outra vez."
+}
+
+# ---------------------------------------------------------------------------
 # Menu
 # ---------------------------------------------------------------------------
 function Show-Menu {
@@ -717,8 +776,9 @@ function Show-Menu {
     Write-Host "  [3] Fazer os dois (1 + 2)"
     Write-Host "  [4] Instalar/registrar Azure DevOps MCP (PAT pessoal)"
     Write-Host "  [5] Instalar/registrar Oracle SQLcl MCP (schema/dados Oracle)"
-    Write-Host "  [6] Diagnostico / Status"
-    Write-Host "  [7] Sair"
+    Write-Host "  [6] Habilitar/desabilitar escrita na KB (GXOBJGEN_WRITE)"
+    Write-Host "  [7] Diagnostico / Status"
+    Write-Host "  [8] Sair"
     Write-Host "========================================" -ForegroundColor DarkGray
 }
 
@@ -732,8 +792,9 @@ while ($running) {
         "3" { Install-GxObjGen; Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "4" { Install-AzureDevOpsMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "5" { Install-OracleSqlclMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "6" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "7" { $running = $false }
+        "6" { Set-GxObjGenWriteMode; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "7" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "8" { $running = $false }
         default { Write-Warn2 "Opcao invalida"; Start-Sleep -Seconds 1 }
     }
 }
