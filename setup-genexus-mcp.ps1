@@ -1,8 +1,11 @@
 #requires -Version 5.1
 <#
   setup-genexus-mcp.ps1
-  Menu de setup para os MCPs do GeneXus: GxObjGen (GX15/17/18, extensao nativa)
-  e genexus-mcp (pacote npm, servidor "genexus18mcp", GX18).
+  Menu de setup para a stack de MCPs do desenvolvedor GeneXus da Datainfo:
+    1. GxObjGen        - GX15/17/18, extensao nativa, tools gx_*
+    2. genexus-mcp     - pacote npm, servidor "genexus18mcp", GX18
+    3. Azure DevOps MCP - pacote oficial @azure-devops/mcp, PAT pessoal por dev
+    4. Oracle SQLcl MCP - CLI oficial Oracle (modo -mcp), schema/dados do banco
   Gerado para Matheus Alexandrino - ver manual "Manual de Instalacao - MCP GeneXus".
 #>
 
@@ -25,6 +28,11 @@ $KbPathCache = Join-Path $PSScriptRoot "kb-path.local.txt"
 # Guarda org + token do Azure DevOps de CADA DEV nesta maquina (nunca vai pro
 # git - ver .gitignore - e cada um gera o proprio PAT, nao e compartilhado).
 $AdoConfigCache = Join-Path $PSScriptRoot "azure-devops.local.json"
+
+# Lembra o caminho do sql.exe (SQLcl) ja detectado/informado nesta maquina.
+# Nunca guarda usuario/senha do Oracle - isso fica so no armazenamento
+# criptografado proprio do SQLcl (conn -save -savepwd), fora deste repo.
+$SqlPathCache = Join-Path $PSScriptRoot "sql-path.local.txt"
 
 # ---------------------------------------------------------------------------
 # Utilidades
@@ -429,6 +437,24 @@ function Show-Status {
     catch {
         Write-Warn2 "Gateway nao respondeu em 127.0.0.1:8780 - normal se o GeneXus estiver fechado, sem KB aberta, ou se voce estiver em modo per-KB"
     }
+
+    Write-Host ""
+    Write-Info "Testando Oracle SQLcl (sql.exe)..."
+    $sqlCheck = $null
+    if (Test-CommandExists "sql") {
+        $sqlCheck = (Get-Command "sql" -ErrorAction SilentlyContinue).Source
+    }
+    elseif (Test-Path $SqlPathCache) {
+        $cached = (Get-Content -Path $SqlPathCache -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($cached -and (Test-Path $cached)) { $sqlCheck = $cached }
+    }
+    if ($sqlCheck) {
+        Write-Ok "sql.exe resolvido em: $sqlCheck"
+        Write-Info "Peca ao agente pra rodar 'connections_list' (ferramenta do MCP sqlcl) pra ver as conexoes salvas - o script nao mexe nisso."
+    }
+    else {
+        Write-Warn2 "sql.exe nao encontrado (nem no PATH, nem em cache) - rode a opcao [5] do menu para configurar"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -560,19 +586,139 @@ function Install-AzureDevOpsMcp {
 }
 
 # ---------------------------------------------------------------------------
+# Opcao 5: Oracle SQLcl MCP (CLI oficial da Oracle, modo nativo -mcp, stdio -
+# da acesso ao schema/dados do Oracle por tras da KB, ex.: tabelas EJADE/
+# ESAFIRA usadas pelo app bh_dsv_ejade). Nao e pacote npm: e pre-requisito
+# manual (SQLcl + JDK 17+ instalados a parte). O script SO detecta o
+# executavel e registra o servidor - nunca pede nem guarda usuario/senha do
+# Oracle, isso fica so no armazenamento criptografado do proprio SQLcl
+# (comando "conn -save -savepwd", rodado manualmente pelo dev).
+# ---------------------------------------------------------------------------
+function Install-OracleSqlclMcp {
+    Write-Host ""
+    Write-Host "== Oracle SQLcl MCP ==" -ForegroundColor Magenta
+
+    # 1) Detectar sql.exe: PATH -> caminho padrao -> cache local -> perguntar.
+    $sqlPath = $null
+    if (Test-CommandExists "sql") {
+        $sqlPath = (Get-Command "sql" -ErrorAction SilentlyContinue).Source
+    }
+
+    if (-not $sqlPath) {
+        $defaultSqlPath = "C:\Oracle\sqlcl\bin\sql.exe"
+        if (Test-Path $defaultSqlPath) { $sqlPath = $defaultSqlPath }
+    }
+
+    $cachedSqlPath = $null
+    if (Test-Path $SqlPathCache) {
+        $cachedSqlPath = (Get-Content -Path $SqlPathCache -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+    if (-not $sqlPath -and $cachedSqlPath -and (Test-Path $cachedSqlPath)) {
+        $sqlPath = $cachedSqlPath
+    }
+
+    if (-not $sqlPath) {
+        Write-Warn2 "sql.exe (Oracle SQLcl) nao encontrado no PATH nem em '$defaultSqlPath'."
+        $manualPath = Read-Host "  Informe o caminho completo do sql.exe (ex.: C:\Oracle\sqlcl\bin\sql.exe)"
+        if ([string]::IsNullOrWhiteSpace($manualPath) -or -not (Test-Path $manualPath)) {
+            Write-Err2 "Caminho '$manualPath' nao encontrado - instale o SQLcl (Oracle) e rode esta opcao de novo. Abortando esta opcao."
+            return
+        }
+        $sqlPath = $manualPath
+    }
+    else {
+        Write-Ok "sql.exe encontrado em: $sqlPath"
+    }
+
+    Set-Content -Path $SqlPathCache -Value $sqlPath -Encoding UTF8 -NoNewline
+
+    # 2) Detectar Java (SQLcl -mcp roda sobre JVM, precisa JDK 17+). So avisa,
+    # nao aborta - o dev pode ja ter um JAVA_HOME valido que o script nao
+    # detecta perfeitamente.
+    $javaHome = $env:JAVA_HOME
+    if ($javaHome -and (Test-Path $javaHome)) {
+        Write-Ok "JAVA_HOME encontrado: $javaHome"
+    }
+    elseif (Test-CommandExists "java") {
+        Write-Warn2 "JAVA_HOME nao esta setado, mas 'java' foi encontrado no PATH - o SQLcl deve funcionar mesmo assim."
+        Write-Warn2 "Se o modo -mcp falhar ao subir, defina JAVA_HOME apontando pra um JDK 17+ e rode esta opcao de novo."
+        $javaHome = $null
+    }
+    else {
+        Write-Warn2 "Nenhum JDK detectado (nem JAVA_HOME, nem 'java' no PATH). O modo -mcp do SQLcl precisa de JDK 17+."
+        Write-Warn2 "Instale um JDK 17+ e defina JAVA_HOME antes de usar este MCP - continuando o registro mesmo assim."
+        $javaHome = $null
+    }
+
+    # 3) Credencial do banco: NUNCA pedida/guardada pelo script. So imprime o
+    # comando pra rodar manualmente, no terminal do proprio dev - mesmo
+    # raciocinio do PAT do Azure DevOps.
+    Write-Host ""
+    Write-Info "Autenticacao no Oracle: o SQLcl guarda a conexao de forma CRIPTOGRAFADA no seu"
+    Write-Info "proprio armazenamento (fora deste repositorio, fora do .claude.json). O agente"
+    Write-Info "nunca ve sua senha - so lista/usa conexoes salvas por nome."
+    Write-Info "Se ainda nao tem uma conexao salva, rode manualmente num terminal (fora deste script):"
+    Write-Host ""
+    Write-Host "    sql /nolog" -ForegroundColor White
+    Write-Host "    conn -save <nome-da-conexao> -savepwd <usuario>/<senha>@<host>:<porta>/<service_name>" -ForegroundColor White
+    Write-Host ""
+    Write-Warn2 "Recomendado: use um usuario Oracle dedicado e SOMENTE LEITURA para o agente,"
+    Write-Warn2 "nunca o schema owner da aplicacao - o SQLcl MCP nao tem deny-by-default (sql_run"
+    Write-Warn2 "executa DML/DDL se o usuario da conexao tiver privilegio pra isso)."
+    Write-Host ""
+
+    # 4) Registrar o servidor stdio nos 3 clientes - mesmo padrao idempotente
+    # ja usado pros outros MCPs. Nenhum segredo entra no JSON: so caminho do
+    # executavel e JAVA_HOME.
+    Ensure-ClaudeCodeCli | Out-Null
+
+    $envArgs = @()
+    if ($javaHome) { $envArgs = @("--env", "JAVA_HOME=$javaHome") }
+
+    Write-Info "Registrando 'sqlcl' no Claude Code (escopo: usuario - vale em qualquer pasta/projeto)..."
+    try { Invoke-Claude mcp remove sqlcl --scope user 2>$null | Out-Null } catch {}
+    Invoke-Claude mcp add --transport stdio --scope user @envArgs sqlcl -- $sqlPath -mcp
+
+    $desktopEnv = @{}
+    $vscodeEnv = @{}
+    if ($javaHome) {
+        $desktopEnv = @{ JAVA_HOME = $javaHome }
+        $vscodeEnv = @{ JAVA_HOME = $javaHome }
+    }
+
+    $desktopEntry = @{ command = $sqlPath; args = @("-mcp") }
+    if ($desktopEnv.Count -gt 0) { $desktopEntry["env"] = $desktopEnv }
+    Set-McpServerEntry -ConfigPath $ClaudeDesktopConfig -TopKey "mcpServers" -ServerKey "sqlcl" `
+        -EntryValue $desktopEntry -ClientLabel "Claude Desktop" -WingetId "Anthropic.Claude"
+
+    $vscodeEntry = @{ type = "stdio"; command = $sqlPath; args = @("-mcp") }
+    if ($vscodeEnv.Count -gt 0) { $vscodeEntry["env"] = $vscodeEnv }
+    Set-McpServerEntry -ConfigPath $VSCodeConfig -TopKey "servers" -ServerKey "sqlcl" `
+        -EntryValue $vscodeEntry -ClientLabel "VS Code" -WingetId "Microsoft.VisualStudioCode"
+
+    Write-Host ""
+    Write-Ok "Oracle SQLcl MCP registrado (executavel: $sqlPath)."
+    Write-Warn2 "Se ainda nao criou a conexao salva, rode o 'conn -save -savepwd' acima antes de usar."
+    Write-Warn2 "Depois, peca ao agente pra rodar 'connections_list' pra confirmar o que esta disponivel."
+    Write-Warn2 "Se ja tinha uma sessao do Claude Code aberta, rode '/mcp' nela pra reconectar e ver as tools novas (nao precisa reiniciar o terminal)."
+}
+
+# ---------------------------------------------------------------------------
 # Menu
 # ---------------------------------------------------------------------------
 function Show-Menu {
     Clear-Host
     Write-Host "========================================" -ForegroundColor DarkGray
-    Write-Host "  Setup MCP GeneXus - GxObjGen + genexus-mcp" -ForegroundColor White
+    Write-Host "  Setup MCP GeneXus - Datainfo" -ForegroundColor White
+    Write-Host "  GxObjGen + genexus-mcp + Azure DevOps + Oracle SQLcl" -ForegroundColor White
     Write-Host "========================================" -ForegroundColor DarkGray
     Write-Host "  [1] Instalar/registrar GxObjGen (GX15/17/18)"
     Write-Host "  [2] Instalar/registrar genexus-mcp (npm, GX18)"
     Write-Host "  [3] Fazer os dois (1 + 2)"
     Write-Host "  [4] Instalar/registrar Azure DevOps MCP (PAT pessoal)"
-    Write-Host "  [5] Diagnostico / Status"
-    Write-Host "  [6] Sair"
+    Write-Host "  [5] Instalar/registrar Oracle SQLcl MCP (schema/dados Oracle)"
+    Write-Host "  [6] Diagnostico / Status"
+    Write-Host "  [7] Sair"
     Write-Host "========================================" -ForegroundColor DarkGray
 }
 
@@ -585,8 +731,9 @@ while ($running) {
         "2" { Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "3" { Install-GxObjGen; Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "4" { Install-AzureDevOpsMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "5" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "6" { $running = $false }
+        "5" { Install-OracleSqlclMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "6" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "7" { $running = $false }
         default { Write-Warn2 "Opcao invalida"; Start-Sleep -Seconds 1 }
     }
 }
