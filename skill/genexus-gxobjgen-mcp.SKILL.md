@@ -13,8 +13,8 @@ If both MCP servers are registered in the same client, use tool names to tell th
 
 - GeneXus must be **open with the target KB** — the MCP server starts automatically with the IDE. Nothing works if GeneXus is closed or no KB is loaded.
 - Two connection modes:
-  - **Gateway mode** — fixed endpoint `http://127.0.0.1:8780/mcp`, serves all open KBs at once, requires **Python in PATH**.
-  - **Per-KB mode** — no Python needed, deterministic port in the 8787–8986 range, shown in GeneXus's Output panel when the KB opens. Use `gx_targets` to see connected KBs and their slugs when more than one is open.
+  - **Gateway mode** — fixed endpoint `http://127.0.0.1:8780/mcp`, serves all open KBs at once, requires **Python in PATH**. Registered under a **single** server name (`genexus`) regardless of how many KBs are open — this is exactly why the `kb=<slug>` parameter (rule 8 below) matters: the server name alone doesn't disambiguate which KB a call targets.
+  - **Per-KB mode** — no Python needed, deterministic port in the 8787–8986 range, shown in GeneXus's Output panel when the KB opens (e.g. `MCP server ON em http://127.0.0.1:8845/mcp`). The Output panel also prints the exact registration command to use, with a server name in the `genexus-<kb-slug>` pattern (e.g. KB `bh_jade_new` → `claude mcp add --transport http genexus-bhjadenew http://127.0.0.1:8845/mcp`) — copy that command as shown rather than guessing the slug. Use `gx_targets` to see connected KBs and their slugs when more than one is open.
 - Read-only is the default (deny-by-default security). Write operations require the user to have reopened GeneXus with `GXOBJGEN_WRITE=1` set in the environment **before launch** — never suggest a workaround if a write is refused; tell the user to relaunch GeneXus that way instead.
 - Tools are deferred in Claude Code — load schemas via ToolSearch before calling one for the first time. If tools look stale or missing after an update, run `/mcp` to reconnect.
 
@@ -31,7 +31,7 @@ GX15 support needs GxObjGen v1.12.0+. In GX15, four object-type tools are unavai
 5. **Use `dryRun` and `idempotencyKey`** on mutations when exploring or when a step might be repeated.
 6. **Deletions are irreversible** (`gx_delete_object`, `gx_delete_cascade`) — always confirm with the user first, explicitly, before calling them.
 7. **Build/reorganize/run are slow** (roughly 30–150s via MSBuild) — warn the user before running `gx_reorganize`, `gx_build`, `gx_run`, `gx_test` so a long pause isn't mistaken for a hang.
-8. Multi-KB setups: pass the `kb` parameter (from `gx_targets`) explicitly; with a single KB open it's optional.
+8. Multi-KB setups: pass the `kb` parameter (from `gx_targets`) explicitly. This only applies in **gateway mode**, where every KB shares the same `genexus` server registration — with a single KB open, or in per-KB mode (each KB has its own port/server name), it's optional/not applicable.
 
 ## Tool catalog (by category)
 
