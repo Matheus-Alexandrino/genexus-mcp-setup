@@ -22,6 +22,10 @@ $VSCodeConfig       = Join-Path $env:APPDATA "Code\User\mcp.json"
 # Lembra a ultima pasta de KB usada, pra nao precisar redigitar toda vez.
 $KbPathCache = Join-Path $PSScriptRoot "kb-path.local.txt"
 
+# Guarda org + token do Azure DevOps de CADA DEV nesta maquina (nunca vai pro
+# git - ver .gitignore - e cada um gera o proprio PAT, nao e compartilhado).
+$AdoConfigCache = Join-Path $PSScriptRoot "azure-devops.local.json"
+
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
@@ -468,6 +472,94 @@ function Open-KbAndLaunchClaude {
 }
 
 # ---------------------------------------------------------------------------
+# Opcao 4: Azure DevOps MCP (pacote oficial @azure-devops/mcp, autenticacao
+# por PAT - cada dev gera o proprio token, o script so guarda local nesta
+# maquina e registra no Claude Code)
+# ---------------------------------------------------------------------------
+function Install-AzureDevOpsMcp {
+    Write-Host ""
+    Write-Host "== Azure DevOps MCP ==" -ForegroundColor Magenta
+
+    if (-not (Test-CommandExists "npx")) {
+        Write-Err2 "npx nao encontrado no PATH (Node.js instalado?) - abortando esta opcao"
+        return
+    }
+
+    Write-Info "Cada dev precisa do proprio Personal Access Token (PAT) do Azure DevOps:"
+    Write-Info "  1. Entre em https://dev.azure.com/<SUA-ORG> logado com sua conta"
+    Write-Info "  2. Clique no seu avatar (canto superior direito) > 'Personal access tokens'"
+    Write-Info "  3. 'New Token' - de um nome, escopo minimo (ex.: Code=Read, Work Items=Read) e prazo de expiracao"
+    Write-Info "  4. Copie o token gerado (so aparece uma vez!) e cole aqui quando for pedido"
+    Write-Host ""
+
+    $cached = $null
+    if (Test-Path $AdoConfigCache) {
+        try { $cached = Get-Content -Path $AdoConfigCache -Raw -ErrorAction Stop | ConvertFrom-Json }
+        catch { $cached = $null }
+    }
+
+    # Org padrao da empresa - qualquer dev pode so dar Enter, a menos que
+    # esteja apontando pra outra org do Azure DevOps.
+    $defaultOrg = if ($cached) { $cached.org } else { "DATAINFOLABS" }
+    $org = Read-Host "  Organizacao do Azure DevOps [Enter para usar '$defaultOrg']"
+    if ([string]::IsNullOrWhiteSpace($org)) { $org = $defaultOrg }
+    if ([string]::IsNullOrWhiteSpace($org)) {
+        Write-Err2 "Organizacao nao informada - abortando esta opcao"
+        return
+    }
+
+    $reusePat = $false
+    if ($cached -and $cached.patB64 -and $cached.org -eq $org) {
+        $answer = Read-Host "  Ja tem um PAT salvo nesta maquina pra essa org - reusar? (S/n)"
+        if ($answer -ne "n") { $reusePat = $true }
+    }
+
+    if ($reusePat) {
+        $patB64 = $cached.patB64
+        $email = $cached.email
+    }
+    else {
+        $email = Read-Host "  Seu e-mail (identifica o token, pode ser qualquer valor nao-vazio)"
+        if ([string]::IsNullOrWhiteSpace($email)) { $email = "dev@local" }
+
+        $securePat = Read-Host "  Cole o Personal Access Token (PAT)" -AsSecureString
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePat)
+        try {
+            $patPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        }
+        finally {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+
+        if ([string]::IsNullOrWhiteSpace($patPlain)) {
+            Write-Err2 "PAT nao informado - abortando esta opcao"
+            return
+        }
+
+        # Formato exigido pelo @azure-devops/mcp: PERSONAL_ACCESS_TOKEN deve
+        # conter o base64 de "<email>:<pat>".
+        $patB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$email`:$patPlain"))
+        $patPlain = $null
+    }
+
+    # So fica salvo NESTA maquina (arquivo *.local.* - fora do git, ver
+    # .gitignore). Ainda e sensivel (da acesso ao Azure DevOps do dev),
+    # trate como senha.
+    @{ org = $org; email = $email; patB64 = $patB64 } | ConvertTo-Json | Set-Content -Path $AdoConfigCache -Encoding UTF8
+
+    Ensure-ClaudeCodeCli | Out-Null
+
+    Write-Info "Registrando 'azure-devops' no Claude Code (escopo: usuario - vale em qualquer pasta/projeto)..."
+    try { Invoke-Claude mcp remove azure-devops --scope user 2>$null | Out-Null } catch {}
+    Invoke-Claude mcp add --transport stdio --scope user --env "PERSONAL_ACCESS_TOKEN=$patB64" azure-devops -- npx -y "@azure-devops/mcp" $org --authentication pat
+
+    Write-Host ""
+    Write-Ok "Azure DevOps MCP registrado para a org '$org'."
+    Write-Warn2 "Token salvo so localmente em '$AdoConfigCache' - se o PAT expirar ou trocar de maquina, rode esta opcao de novo."
+    Write-Warn2 "Se ja tinha uma sessao do Claude Code aberta, rode '/mcp' nela pra reconectar e ver as tools novas (nao precisa reiniciar o terminal)."
+}
+
+# ---------------------------------------------------------------------------
 # Menu
 # ---------------------------------------------------------------------------
 function Show-Menu {
@@ -478,8 +570,9 @@ function Show-Menu {
     Write-Host "  [1] Instalar/registrar GxObjGen (GX15/17/18)"
     Write-Host "  [2] Instalar/registrar genexus-mcp (npm, GX18)"
     Write-Host "  [3] Fazer os dois (1 + 2)"
-    Write-Host "  [4] Diagnostico / Status"
-    Write-Host "  [5] Sair"
+    Write-Host "  [4] Instalar/registrar Azure DevOps MCP (PAT pessoal)"
+    Write-Host "  [5] Diagnostico / Status"
+    Write-Host "  [6] Sair"
     Write-Host "========================================" -ForegroundColor DarkGray
 }
 
@@ -491,8 +584,9 @@ while ($running) {
         "1" { Install-GxObjGen; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "2" { Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "3" { Install-GxObjGen; Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "4" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "5" { $running = $false }
+        "4" { Install-AzureDevOpsMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "5" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "6" { $running = $false }
         default { Write-Warn2 "Opcao invalida"; Start-Sleep -Seconds 1 }
     }
 }
