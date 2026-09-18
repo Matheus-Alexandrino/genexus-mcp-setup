@@ -1,0 +1,4 @@
+# Arquivos locais gerados pelo setup-genexus-mcp.ps1 - especificos de cada
+# maquina/dev, nunca devem ir pro repositorio (alguns contem tokens/PATs).
+*.local.txt
+*.local.json
