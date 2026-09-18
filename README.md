@@ -50,8 +50,9 @@ Os quatro são complementares e convivem no mesmo cliente, sob nomes diferentes 
    [3] Fazer os dois (1 + 2)
    [4] Instalar/registrar Azure DevOps MCP (PAT pessoal)
    [5] Instalar/registrar Oracle SQLcl MCP (schema/dados Oracle)
-   [6] Diagnostico / Status
-   [7] Sair
+   [6] Habilitar/desabilitar escrita na KB (GXOBJGEN_WRITE)
+   [7] Diagnostico / Status
+   [8] Sair
    ```
 
 O script clona `GxObjGen-install` em `C:\Tools\GxObjGen-install`, roda `install.ps1` elevado (pede UAC), detecta Python no PATH para escolher gateway ou per-KB, e registra nos clientes — Claude Code via `claude mcp add`, Claude Desktop e VS Code editando os arquivos de configuração (com backup automático antes de qualquer alteração, e checagem de idempotência: rodar de novo não duplica nem quebra o que já está lá). Se o CLI `claude` ainda não estiver instalado, o próprio script oferece instalar (instalador nativo oficial) e ajusta o PATH — inclusive o PATH permanente do Windows, avisando o sistema da mudança, para não precisar reabrir a máquina.
@@ -136,11 +137,29 @@ claude mcp add --transport stdio --scope user --env JAVA_HOME=<javaHome> sqlcl -
 
 Nenhum segredo entra nesse JSON — só o caminho do executável e o `JAVA_HOME`.
 
+## Habilitar escrita na KB (GXOBJGEN_WRITE)
+
+O GxObjGen é deny-by-default: sem a variável `GXOBJGEN_WRITE=1` definida **antes** de abrir o GeneXus, o agente só consegue ler a KB. Isso costumava ser 100% manual — cada dev tinha que setar a variável por fora do script, sem nenhuma ajuda.
+
+A opção **[6]** do `setup-genexus-mcp.ps1` resolve isso do mesmo jeito que o script já trata o PATH do Claude Code: grava `GXOBJGEN_WRITE` como variável de ambiente do **usuário** (permanente, sobrevive a reinícios) e avisa o Windows da mudança (broadcast de `WM_SETTINGCHANGE`) — sem precisar de logoff/logon. A opção também desliga a variável de novo quando rodada com a escrita já habilitada.
+
+```powershell
+[Environment]::SetEnvironmentVariable("GXOBJGEN_WRITE", "1", "User")   # habilita
+[Environment]::SetEnvironmentVariable("GXOBJGEN_WRITE", $null, "User") # desabilita
+```
+
+Dois pontos importantes:
+
+- **É opt-in, nunca automático.** A opção [6] sempre pergunta antes de habilitar, e avisa que qualquer sessão do agente (ou outra pessoa usando a mesma conta do Windows) passa a poder escrever na KB sem aviso extra enquanto a variável estiver ligada.
+- **Só vale depois de fechar e reabrir o GeneXus** — o GxObjGen lê `GXOBJGEN_WRITE` uma única vez, no momento em que o `genexus.exe` inicia. Mudar a variável com o GeneXus já aberto não tem efeito até reabrir.
+
+`Show-Status` (opção [7]) mostra o estado atual dessa variável.
+
 ## Variáveis de ambiente
 
 | Variável | Usada por | Efeito |
 | --- | --- | --- |
-| `GXOBJGEN_WRITE=1` | GxObjGen | Habilita escrita na KB. Precisa estar definida **antes** de abrir o GeneXus. |
+| `GXOBJGEN_WRITE=1` | GxObjGen | Habilita escrita na KB. Precisa estar definida **antes** de abrir o GeneXus. A opção [6] do script grava/apaga ela como variável de usuário, permanente. |
 | `PERSONAL_ACCESS_TOKEN` | Azure DevOps MCP | Base64 de `<email>:<pat>` — obrigatório com `--authentication pat`. Gravado só dentro do `~/.claude.json` (escopo usuário), nunca num arquivo deste repo. |
 | `JAVA_HOME` | Oracle SQLcl MCP | Precisa apontar para um JDK 17+ para o modo `-mcp` do SQLcl subir. |
 | PATH: `python`/`py` | GxObjGen (modo gateway) | Sem Python, o modo gateway não sobe — use per-KB. |
@@ -152,7 +171,7 @@ Nenhum segredo entra nesse JSON — só o caminho do executável e o `JAVA_HOME`
 ## Segurança
 
 - **Loopback only** (`127.0.0.1`) para o GxObjGen — nada sai da máquina, nenhuma chamada externa nem upload de dados da KB.
-- **Read-only por padrão** (deny-by-default) no GxObjGen — escrita liga só com `GXOBJGEN_WRITE=1`.
+- **Read-only por padrão** (deny-by-default) no GxObjGen — escrita liga só com `GXOBJGEN_WRITE=1`. A opção **[6]** do script grava essa variável como variável de usuário permanente (mesmo mecanismo do PATH do Claude Code) e é sempre opt-in — pergunta antes de habilitar e avisa que, enquanto ligada, qualquer sessão do agente (ou outra pessoa na mesma conta do Windows) pode escrever na KB sem aviso extra.
 - Toda mutação do GxObjGen suporta `dryRun` e `idempotencyKey`.
 - `gx_delete_object` / `gx_delete_cascade` são irreversíveis — exigem confirmação explícita.
 - **Azure DevOps MCP sai da máquina** (fala com `dev.azure.com`) — diferente do GxObjGen. O PAT deve ter o menor conjunto de escopos possível (comece só com Work Items Read) e nunca deve ser commitado em `claude_desktop_config.json`/`mcp.json`/`.claude.json` — o script grava só como entrada de escopo usuário no Claude Code (não num arquivo versionado).
@@ -179,7 +198,7 @@ Para o Oracle SQLcl, depois de rodar `conn -save -savepwd` manualmente, peça ao
 | Tools ausentes ou com schema antigo | GxObjGen / Azure DevOps / Oracle | Rodar `/mcp` no Claude Code para reconectar |
 | Gateway (8780) não responde | GxObjGen | Python fora do PATH — trocar para modo per-KB ou instalar Python |
 | Conexão recusada em todas as portas | GxObjGen | GeneXus fechado ou sem KB carregada |
-| Escritas sempre recusadas | GxObjGen | GeneXus não foi reaberto com `GXOBJGEN_WRITE=1` definida antes do lançamento |
+| Escritas sempre recusadas | GxObjGen | `GXOBJGEN_WRITE` não está habilitada (rodar a opção [6] do script) ou o GeneXus não foi fechado e reaberto depois de habilitar — a variável só é lida quando o `genexus.exe` inicia |
 | Extensão GX15 desabilitada silenciosamente | GxObjGen | Rodar `install.ps1` de novo (auto-corrige `PackageCompatibility`) |
 | "Failed to connect" / "Access denied" | genexus-mcp | Gateway exe em `%LOCALAPPDATA%` bloqueado por AppLocker/SRP — reinstalar em caminho whitelisted |
 | Cliente não aparece em `clients` | genexus-mcp | Rodar `npx genexus-mcp clients add --clients <nome>` de novo |
