@@ -45,6 +45,31 @@ $script:ClaudeCodeChecked = $false
 # PATH do USUARIO (persistente no Windows, nao so nesta sessao) e tambem no
 # PATH desta sessao. Sem isso, "claude" funciona no terminal que rodou o
 # instalador mas some de novo em qualquer terminal novo/outro.
+# Avisa o Windows (broadcast WM_SETTINGCHANGE) que as variaveis de ambiente
+# mudaram. Sem isso, o Explorer/Windows Terminal continuam com o PATH antigo
+# em cache e um terminal novo aberto a partir deles herda o valor velho,
+# MESMO com o registro ja atualizado - e exatamente o sintoma de "gravei no
+# PATH mas o sistema ainda nao reconhece".
+function Broadcast-EnvironmentChange {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]"Win32.NativeMethods").Type) {
+            Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(
+    IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@ -ErrorAction Stop
+        }
+        $HWND_BROADCAST   = [IntPtr]0xffff
+        $WM_SETTINGCHANGE = 0x1A
+        $result = [UIntPtr]::Zero
+        [Win32.NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null
+    }
+    catch {
+        # Nao critico - na pior das hipoteses so precisa abrir um terminal novo depois de logoff/logon.
+    }
+}
+
 function Add-ClaudeLocalBinToPath {
     $localBin = Join-Path $env:USERPROFILE ".local\bin"
     if (-not (Test-Path $localBin)) { return $false }
@@ -65,8 +90,16 @@ function Add-ClaudeLocalBinToPath {
         if ($userPath -notlike "*$localBin*") {
             $newUserPath = if ([string]::IsNullOrEmpty($userPath)) { $localBin } else { "$userPath;$localBin" }
             [Environment]::SetEnvironmentVariable("PATH", $newUserPath, "User")
-            Write-Ok "Adicionado '$localBin' ao PATH do usuario (permanente - vale em terminais novos)."
+            Broadcast-EnvironmentChange
+            Write-Ok "Adicionado '$localBin' ao PATH do usuario (permanente) e avisado o Windows da mudanca."
+            Write-Warn2 "Se o proximo terminal (aberto pelo Explorer/menu Iniciar) ainda nao reconhecer 'claude', feche TODAS as janelas de terminal abertas (nao so a aba) e abra uma nova - ou faca logoff/logon."
             $changed = $true
+        }
+        else {
+            # Ja estava gravado no registro de uma execucao anterior, mas o
+            # terminal atual pode ter aberto ANTES desse ajuste - reforca o
+            # broadcast pra qualquer terminal novo pegar o valor certo.
+            Broadcast-EnvironmentChange
         }
     }
     catch {
