@@ -19,6 +19,9 @@ $ClaudeCodeConfig   = Join-Path $env:USERPROFILE ".claude.json"
 $ClaudeDesktopConfig = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
 $VSCodeConfig       = Join-Path $env:APPDATA "Code\User\mcp.json"
 
+# Lembra a ultima pasta de KB usada, pra nao precisar redigitar toda vez.
+$KbPathCache = Join-Path $PSScriptRoot "kb-path.local.txt"
+
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
@@ -38,13 +41,55 @@ function Test-PythonAvailable {
 
 $script:ClaudeCodeChecked = $false
 
+# Garante que a pasta do instalador nativo (%USERPROFILE%\.local\bin) esta no
+# PATH do USUARIO (persistente no Windows, nao so nesta sessao) e tambem no
+# PATH desta sessao. Sem isso, "claude" funciona no terminal que rodou o
+# instalador mas some de novo em qualquer terminal novo/outro.
+function Add-ClaudeLocalBinToPath {
+    $localBin = Join-Path $env:USERPROFILE ".local\bin"
+    if (-not (Test-Path $localBin)) { return $false }
+
+    $changed = $false
+
+    # PATH desta sessao (efeito imediato, sem reabrir terminal).
+    if ($env:PATH -notlike "*$localBin*") {
+        $env:PATH = "$localBin;$env:PATH"
+        $changed = $true
+    }
+
+    # PATH persistente do usuario (vale pra terminais novos, inclusive apos
+    # reiniciar a maquina) - e o que faltava: o instalador nativo so cobre a
+    # sessao em que ele mesmo roda.
+    try {
+        $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+        if ($userPath -notlike "*$localBin*") {
+            $newUserPath = if ([string]::IsNullOrEmpty($userPath)) { $localBin } else { "$userPath;$localBin" }
+            [Environment]::SetEnvironmentVariable("PATH", $newUserPath, "User")
+            Write-Ok "Adicionado '$localBin' ao PATH do usuario (permanente - vale em terminais novos)."
+            $changed = $true
+        }
+    }
+    catch {
+        Write-Warn2 "Nao consegui gravar o PATH permanente do usuario ($_). 'claude' vai funcionar so nesta sessao; adicione manualmente depois: Propriedades do Sistema > Variaveis de Ambiente > PATH do usuario > $localBin"
+    }
+
+    return $changed
+}
+
 # Garante que o CLI 'claude' (Claude Code) esta disponivel nesta sessao do
 # PowerShell. Se nao estiver, oferece instalar via instalador nativo oficial
-# (https://claude.ai/install.ps1) e adiciona a pasta do binario ao PATH desta
-# sessao, para nao precisar reabrir o terminal.
+# (https://claude.ai/install.ps1) e adiciona a pasta do binario ao PATH -
+# tanto desta sessao quanto de forma permanente (PATH do usuario), pra nao
+# precisar reconfigurar isso manualmente depois.
 function Ensure-ClaudeCodeCli {
     if ($script:ClaudeCodeChecked) { return (Test-CommandExists "claude") }
     $script:ClaudeCodeChecked = $true
+
+    # Mesmo se 'claude' ja existir no PATH desta sessao (ou o binario nativo
+    # ja estiver instalado de uma execucao anterior), garante que o PATH
+    # permanente do usuario tambem aponta pra la - e exatamente o caso de
+    # "instalei, funcionou uma vez, sumiu no terminal novo".
+    Add-ClaudeLocalBinToPath | Out-Null
 
     if (Test-CommandExists "claude") { return $true }
 
@@ -65,18 +110,16 @@ function Ensure-ClaudeCodeCli {
     }
 
     # Instalador nativo coloca o binario em $env:USERPROFILE\.local\bin\claude.exe;
-    # adiciona ao PATH desta sessao pra nao precisar reabrir o terminal.
-    $localBin = Join-Path $env:USERPROFILE ".local\bin"
-    if ((Test-Path $localBin) -and ($env:PATH -notlike "*$localBin*")) {
-        $env:PATH = "$localBin;$env:PATH"
-    }
+    # adiciona ao PATH desta sessao E ao PATH permanente do usuario, pra nao
+    # sumir de novo em outro terminal.
+    Add-ClaudeLocalBinToPath | Out-Null
 
     if (Test-CommandExists "claude") {
-        Write-Ok "Claude Code instalado e disponivel nesta sessao."
+        Write-Ok "Claude Code instalado e disponivel (nesta sessao e em terminais novos)."
         return $true
     }
     else {
-        Write-Warn2 "Instalador rodou, mas 'claude' ainda nao aparece no PATH desta sessao. Abra um terminal novo e rode de novo esta opcao."
+        Write-Warn2 "Instalador rodou, mas 'claude' ainda nao aparece no PATH desta sessao. Abra um terminal NOVO (o PATH permanente ja foi ajustado) e tente de novo."
         return $false
     }
 }
@@ -325,6 +368,45 @@ function Show-Status {
 }
 
 # ---------------------------------------------------------------------------
+# Passo final: ir pra pasta da KB e abrir o Claude Code
+# ---------------------------------------------------------------------------
+function Open-KbAndLaunchClaude {
+    Write-Host ""
+    $answer = Read-Host "  Ir para a pasta da KB e rodar 'claude' agora? (s/N)"
+    if ($answer -ne "s") { return }
+
+    $default = $null
+    if (Test-Path $KbPathCache) {
+        $default = (Get-Content -Path $KbPathCache -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+
+    if ($default) {
+        $kbPath = Read-Host "  Pasta da KB [Enter para usar '$default']"
+        if ([string]::IsNullOrWhiteSpace($kbPath)) { $kbPath = $default }
+    }
+    else {
+        $kbPath = Read-Host "  Pasta da KB (ex.: C:\KBs\MinhaKB ou C:\gx\15u12)"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($kbPath) -or -not (Test-Path $kbPath)) {
+        Write-Err2 "Pasta '$kbPath' nao encontrada - pulando"
+        return
+    }
+
+    Set-Content -Path $KbPathCache -Value $kbPath -Encoding UTF8 -NoNewline
+
+    if (-not (Ensure-ClaudeCodeCli)) {
+        Write-Warn2 "Claude Code nao disponivel - so entrando na pasta, sem abrir o agente"
+        Set-Location $kbPath
+        return
+    }
+
+    Write-Info "Indo para $kbPath e abrindo o Claude Code..."
+    Set-Location $kbPath
+    claude
+}
+
+# ---------------------------------------------------------------------------
 # Menu
 # ---------------------------------------------------------------------------
 function Show-Menu {
@@ -345,9 +427,9 @@ while ($running) {
     Show-Menu
     $choice = Read-Host "Escolha uma opcao"
     switch ($choice) {
-        "1" { Install-GxObjGen; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "2" { Install-GenexusMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "3" { Install-GxObjGen; Install-GenexusMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "1" { Install-GxObjGen; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "2" { Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "3" { Install-GxObjGen; Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "4" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "5" { $running = $false }
         default { Write-Warn2 "Opcao invalida"; Start-Sleep -Seconds 1 }
