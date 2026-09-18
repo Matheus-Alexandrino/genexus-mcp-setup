@@ -114,6 +114,33 @@ function Add-ClaudeLocalBinToPath {
 # (https://claude.ai/install.ps1) e adiciona a pasta do binario ao PATH -
 # tanto desta sessao quanto de forma permanente (PATH do usuario), pra nao
 # precisar reconfigurar isso manualmente depois.
+
+# Caminho fixo do binario nativo instalado por install.ps1 (claude.ai).
+function Get-ClaudeExePath {
+    $exe = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
+    if (Test-Path $exe) { return $exe }
+    return $null
+}
+
+# Roda o Claude Code de forma resiliente, sem depender de o PATH ja ter
+# propagado nesta sessao/terminal: tenta 'claude' do PATH primeiro e, se nao
+# achar (mesmo tendo acabado de instalar), cai pro caminho completo do
+# binario. Assim, dentro do proprio fluxo do script ("um clique, um Enter"),
+# nunca da "termo nao reconhecido" - so um terminal aberto por fora, depois
+# de instalado, pode precisar do ajuste de PATH permanente (ja tratado acima).
+function Invoke-Claude {
+    if (Test-CommandExists "claude") {
+        claude @args
+        return
+    }
+    $exe = Get-ClaudeExePath
+    if ($exe) {
+        & $exe @args
+        return
+    }
+    Write-Err2 "Claude Code nao encontrado (nem no PATH, nem no local padrao de instalacao)."
+}
+
 function Ensure-ClaudeCodeCli {
     if ($script:ClaudeCodeChecked) { return (Test-CommandExists "claude") }
     $script:ClaudeCodeChecked = $true
@@ -328,7 +355,7 @@ function Install-GxObjGen {
 
     if (Ensure-ClaudeCodeCli) {
         Write-Info "Registrando no Claude Code..."
-        claude mcp add --transport http genexus $mcpUrl
+        Invoke-Claude mcp add --transport http genexus $mcpUrl
     }
     else {
         Write-Warn2 "Pulando registro no Claude Code (CLI nao instalado)"
@@ -428,7 +455,8 @@ function Open-KbAndLaunchClaude {
 
     Set-Content -Path $KbPathCache -Value $kbPath -Encoding UTF8 -NoNewline
 
-    if (-not (Ensure-ClaudeCodeCli)) {
+    $claudeOk = (Ensure-ClaudeCodeCli) -or (Get-ClaudeExePath)
+    if (-not $claudeOk) {
         Write-Warn2 "Claude Code nao disponivel - so entrando na pasta, sem abrir o agente"
         Set-Location $kbPath
         return
@@ -436,7 +464,7 @@ function Open-KbAndLaunchClaude {
 
     Write-Info "Indo para $kbPath e abrindo o Claude Code..."
     Set-Location $kbPath
-    claude
+    Invoke-Claude
 }
 
 # ---------------------------------------------------------------------------
