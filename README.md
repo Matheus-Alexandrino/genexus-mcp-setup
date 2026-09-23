@@ -1,6 +1,6 @@
 # genexus-mcp-setup
 
-Manual de instalação e script de setup para integrar agentes de IA (Claude Code, Claude Desktop, VS Code) à stack completa de um desenvolvedor GeneXus da Datainfo, via MCP, usando quatro servidores em paralelo:
+Manual de instalação e script de setup para integrar agentes de IA (Claude Code, Claude Desktop, VS Code) à stack completa de um desenvolvedor GeneXus, via MCP, usando quatro servidores em paralelo:
 
 - **[GxObjGen](https://github.com/franciscorizzo/GxObjGen-install)** — extensão nativa da IDE, cobre **GeneXus 15, 17 e 18**, ~73 tools (`gx_*`).
 - **genexus-mcp** (pacote npm, servidor `genexus18mcp`) — community, cobre **GeneXus 18**.
@@ -101,7 +101,7 @@ O `@azure-devops/mcp` roda via `npx` (stdio). O `setup-genexus-mcp.ps1` (opção
 
 Passo a passo do que o script pede:
 
-1. Cada dev entra em `https://dev.azure.com/<SUA-ORG>` (padrão da empresa: `DATAINFOLABS`), clica no avatar > **Personal access tokens** > **New Token**, com escopo mínimo (ex.: Work Items Read) e prazo de expiração.
+1. Cada dev entra em `https://dev.azure.com/<SUA-ORG>` (cola o dominio da empresa), clica no avatar > **Personal access tokens** > **New Token**, com escopo mínimo (ex.: Work Items Read) e prazo de expiração.
 2. Cola o token quando o script pedir — a digitação não aparece na tela (`Read-Host -AsSecureString`).
 3. O script monta o `PERSONAL_ACCESS_TOKEN` no formato exigido pelo pacote (base64 de `<email>:<pat>`) e registra no Claude Code.
 4. O token fica salvo **só nesta máquina**, num arquivo `azure-devops.local.json` (fora do git — ver `.gitignore`), para não precisar colar de novo a cada execução; a opção reusa automaticamente se ainda for válida.
