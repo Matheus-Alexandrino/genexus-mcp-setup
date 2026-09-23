@@ -1,12 +1,14 @@
 #requires -Version 5.1
 <#
   setup-genexus-mcp.ps1
-  Menu de setup para a stack de MCPs do desenvolvedor GeneXus da Datainfo:
+  Menu de setup para a stack de MCPs de um desenvolvedor GeneXus:
     1. GxObjGen        - GX15/17/18, extensao nativa, tools gx_*
     2. genexus-mcp     - pacote npm, servidor "genexus18mcp", GX18
     3. Azure DevOps MCP - pacote oficial @azure-devops/mcp, PAT pessoal por dev
     4. Oracle SQLcl MCP - CLI oficial Oracle (modo -mcp), schema/dados do banco
-  Gerado para Matheus Alexandrino - ver manual "Manual de Instalacao - MCP GeneXus".
+    5. SQL Server MCP  - pacote npm mssql-mcp-node, schema/dados do banco
+    6. Atlassian MCP   - servidor remoto oficial (Jira/Confluence/Bitbucket), OAuth
+  Ver manual "Manual de Instalacao - MCP GeneXus".
 #>
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +35,12 @@ $AdoConfigCache = Join-Path $PSScriptRoot "azure-devops.local.json"
 # Nunca guarda usuario/senha do Oracle - isso fica so no armazenamento
 # criptografado proprio do SQLcl (conn -save -savepwd), fora deste repo.
 $SqlPathCache = Join-Path $PSScriptRoot "sql-path.local.txt"
+
+# Guarda a conexao do SQL Server de CADA DEV nesta maquina (nunca vai pro git
+# - ver .gitignore). O mssql-mcp-node nao tem um cofre de credenciais proprio
+# como o SQLcl, entao a senha fica salva so aqui, local - mesmo raciocinio do
+# cache do PAT do Azure DevOps.
+$MssqlConfigCache = Join-Path $PSScriptRoot "sqlserver.local.json"
 
 # ---------------------------------------------------------------------------
 # Utilidades
@@ -386,7 +394,7 @@ function Install-GxObjGen {
 
     Write-Host ""
     Write-Ok "GxObjGen configurado. Abra o GeneXus com a KB e peca 'gx_whoami' para confirmar."
-    Write-Info "Por padrao a escrita na KB fica desligada - use a opcao [6] do menu quando precisar habilitar."
+    Write-Info "Por padrao a escrita na KB fica desligada - use a opcao [8] do menu quando precisar habilitar."
 }
 
 # ---------------------------------------------------------------------------
@@ -412,7 +420,7 @@ function Install-GenexusMcp {
 }
 
 # ---------------------------------------------------------------------------
-# Opcao 4: Diagnostico
+# Opcao 9: Diagnostico
 # ---------------------------------------------------------------------------
 function Show-Status {
     Write-Host ""
@@ -458,13 +466,28 @@ function Show-Status {
     }
 
     Write-Host ""
+    Write-Info "Testando SQL Server MCP (configuracao salva)..."
+    if (Test-Path $MssqlConfigCache) {
+        Write-Ok "Configuracao encontrada em: $MssqlConfigCache"
+        Write-Info "Peca ao agente pra rodar 'list_databases' (ferramenta do MCP sqlserver) pra confirmar a conexao."
+    }
+    else {
+        Write-Warn2 "Nenhuma configuracao salva - rode a opcao [6] do menu para configurar"
+    }
+
+    Write-Host ""
+    Write-Info "Testando Atlassian MCP (Jira/Confluence)..."
+    Write-Info "Servidor remoto (mcp.atlassian.com) - sem estado local pra checar aqui."
+    Write-Info "Se ja registrou (opcao [7]), rode '/mcp' numa sessao do Claude Code pra confirmar a autenticacao OAuth."
+
+    Write-Host ""
     Write-Info "Escrita na KB (GXOBJGEN_WRITE)..."
     $writeMode = [Environment]::GetEnvironmentVariable("GXOBJGEN_WRITE", "User")
     if ($writeMode -eq "1") {
-        Write-Warn2 "HABILITADA nesta conta - o agente pode criar/editar/apagar objetos na KB. Use a opcao [6] para desligar."
+        Write-Warn2 "HABILITADA nesta conta - o agente pode criar/editar/apagar objetos na KB. Use a opcao [8] para desligar."
     }
     else {
-        Write-Ok "Desabilitada (leitura por padrao) - use a opcao [6] do menu para habilitar quando precisar."
+        Write-Ok "Desabilitada (leitura por padrao) - use a opcao [8] do menu para habilitar quando precisar."
     }
 }
 
@@ -535,11 +558,16 @@ function Install-AzureDevOpsMcp {
         catch { $cached = $null }
     }
 
-    # Org padrao da empresa - qualquer dev pode so dar Enter, a menos que
-    # esteja apontando pra outra org do Azure DevOps.
-    $defaultOrg = if ($cached) { $cached.org } else { "DATAINFOLABS" }
-    $org = Read-Host "  Organizacao do Azure DevOps [Enter para usar '$defaultOrg']"
-    if ([string]::IsNullOrWhiteSpace($org)) { $org = $defaultOrg }
+    # Reusa a org da ultima execucao nesta maquina, se houver - cada empresa/
+    # time usa a sua propria, entao nao ha um valor padrao fixo no script.
+    $defaultOrg = if ($cached) { $cached.org } else { $null }
+    if ($defaultOrg) {
+        $org = Read-Host "  Organizacao do Azure DevOps [Enter para usar '$defaultOrg']"
+        if ([string]::IsNullOrWhiteSpace($org)) { $org = $defaultOrg }
+    }
+    else {
+        $org = Read-Host "  Organizacao do Azure DevOps (o nome depois de https://dev.azure.com/)"
+    }
     if ([string]::IsNullOrWhiteSpace($org)) {
         Write-Err2 "Organizacao nao informada - abortando esta opcao"
         return
@@ -715,7 +743,175 @@ function Install-OracleSqlclMcp {
 }
 
 # ---------------------------------------------------------------------------
-# Opcao 6: habilita/desabilita escrita na KB do GxObjGen (GXOBJGEN_WRITE=1).
+# Opcao 6: SQL Server MCP (pacote npm "mssql-mcp-node", stdio via npx) - da
+# acesso ao schema/dados de um banco SQL Server (ex.: base por tras de uma KB
+# GeneXus Evolution). Por padrao roda so-leitura; escrita e opt-in via
+# MSSQL_ENABLE_WRITES=true, passada so nesse registro - nunca fica permanente
+# no ambiente do usuario como o GXOBJGEN_WRITE.
+# ---------------------------------------------------------------------------
+function Install-SqlServerMcp {
+    Write-Host ""
+    Write-Host "== SQL Server MCP ==" -ForegroundColor Magenta
+
+    if (-not (Test-CommandExists "npx")) {
+        Write-Err2 "npx nao encontrado no PATH (Node.js instalado?) - abortando esta opcao"
+        return
+    }
+
+    $cached = $null
+    if (Test-Path $MssqlConfigCache) {
+        try { $cached = Get-Content -Path $MssqlConfigCache -Raw -ErrorAction Stop | ConvertFrom-Json }
+        catch { $cached = $null }
+    }
+
+    $defaultServer = if ($cached) { $cached.server } else { $null }
+    if ($defaultServer) {
+        $server = Read-Host "  Servidor SQL Server (host ou host\instancia) [Enter para usar '$defaultServer']"
+        if ([string]::IsNullOrWhiteSpace($server)) { $server = $defaultServer }
+    }
+    else {
+        $server = Read-Host "  Servidor SQL Server (host ou host\instancia)"
+    }
+    if ([string]::IsNullOrWhiteSpace($server)) {
+        Write-Err2 "Servidor nao informado - abortando esta opcao"
+        return
+    }
+
+    $defaultPort = if ($cached -and $cached.port) { $cached.port } else { "1433" }
+    $port = Read-Host "  Porta [Enter para usar '$defaultPort']"
+    if ([string]::IsNullOrWhiteSpace($port)) { $port = $defaultPort }
+
+    $defaultDatabase = if ($cached) { $cached.database } else { $null }
+    if ($defaultDatabase) {
+        $database = Read-Host "  Banco de dados [Enter para usar '$defaultDatabase']"
+        if ([string]::IsNullOrWhiteSpace($database)) { $database = $defaultDatabase }
+    }
+    else {
+        $database = Read-Host "  Banco de dados"
+    }
+    if ([string]::IsNullOrWhiteSpace($database)) {
+        Write-Err2 "Banco de dados nao informado - abortando esta opcao"
+        return
+    }
+
+    $defaultUser = if ($cached) { $cached.user } else { $null }
+    if ($defaultUser) {
+        $user = Read-Host "  Usuario SQL [Enter para usar '$defaultUser']"
+        if ([string]::IsNullOrWhiteSpace($user)) { $user = $defaultUser }
+    }
+    else {
+        $user = Read-Host "  Usuario SQL"
+    }
+    if ([string]::IsNullOrWhiteSpace($user)) {
+        Write-Err2 "Usuario nao informado - abortando esta opcao"
+        return
+    }
+
+    $securePassword = Read-Host "  Senha do usuario SQL" -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+    try {
+        $password = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+    if ([string]::IsNullOrWhiteSpace($password)) {
+        Write-Err2 "Senha nao informada - abortando esta opcao"
+        return
+    }
+
+    Write-Warn2 "Recomendado: use um usuario SQL Server dedicado e SOMENTE LEITURA para o agente,"
+    Write-Warn2 "nunca o usuario de aplicacao com acesso total ao banco."
+    $answerWrite = Read-Host "  Habilitar escrita (MSSQL_ENABLE_WRITES=true) neste registro? (s/N)"
+    $enableWrites = ($answerWrite -eq "s")
+
+    # So fica salvo NESTA maquina (arquivo *.local.json - fora do git, ver
+    # .gitignore). A senha e sensivel, trate como qualquer outra credencial.
+    @{ server = $server; port = $port; database = $database; user = $user; password = $password; enableWrites = $enableWrites } |
+        ConvertTo-Json | Set-Content -Path $MssqlConfigCache -Encoding UTF8
+
+    Ensure-ClaudeCodeCli | Out-Null
+
+    $envArgs = @(
+        "--env", "MSSQL_SERVER=$server",
+        "--env", "MSSQL_PORT=$port",
+        "--env", "MSSQL_DATABASE=$database",
+        "--env", "MSSQL_USER=$user",
+        "--env", "MSSQL_PASSWORD=$password"
+    )
+    if ($enableWrites) { $envArgs += @("--env", "MSSQL_ENABLE_WRITES=true") }
+
+    Write-Info "Registrando 'sqlserver' no Claude Code (escopo: usuario - vale em qualquer pasta/projeto)..."
+    try { Invoke-Claude mcp remove sqlserver --scope user 2>$null | Out-Null } catch {}
+    Invoke-Claude mcp add --transport stdio --scope user @envArgs sqlserver -- npx -y mssql-mcp-node
+
+    $mcpEnv = @{
+        MSSQL_SERVER   = $server
+        MSSQL_PORT     = $port
+        MSSQL_DATABASE = $database
+        MSSQL_USER     = $user
+        MSSQL_PASSWORD = $password
+    }
+    if ($enableWrites) { $mcpEnv["MSSQL_ENABLE_WRITES"] = "true" }
+
+    Set-McpServerEntry -ConfigPath $ClaudeDesktopConfig -TopKey "mcpServers" -ServerKey "sqlserver" `
+        -EntryValue @{ command = "npx"; args = @("-y", "mssql-mcp-node"); env = $mcpEnv } -ClientLabel "Claude Desktop" `
+        -WingetId "Anthropic.Claude"
+
+    Set-McpServerEntry -ConfigPath $VSCodeConfig -TopKey "servers" -ServerKey "sqlserver" `
+        -EntryValue @{ type = "stdio"; command = "npx"; args = @("-y", "mssql-mcp-node"); env = $mcpEnv } -ClientLabel "VS Code" `
+        -WingetId "Microsoft.VisualStudioCode"
+
+    Write-Host ""
+    Write-Ok "SQL Server MCP registrado (servidor: $server, banco: $database)."
+    if ($enableWrites) {
+        Write-Warn2 "Escrita HABILITADA (MSSQL_ENABLE_WRITES=true) - o agente pode rodar execute_write_query."
+    }
+    else {
+        Write-Info "Escrita desabilitada (padrao) - so leitura. Rode esta opcao [6] de novo pra mudar."
+    }
+    Write-Warn2 "Se ja tinha uma sessao do Claude Code aberta, rode '/mcp' nela pra reconectar e ver as tools novas (nao precisa reiniciar o terminal)."
+}
+
+# ---------------------------------------------------------------------------
+# Opcao 7: Atlassian MCP (servidor remoto oficial da Atlassian - Jira,
+# Confluence, Bitbucket, Jira Service Management). Diferente dos outros
+# conectores, roda hospedado pela propria Atlassian (mcp.atlassian.com) e
+# autentica por OAuth no navegador na primeira vez que uma tool for usada -
+# nao ha PAT nem senha pra gerar/colar/guardar aqui.
+# ---------------------------------------------------------------------------
+function Install-JiraMcp {
+    Write-Host ""
+    Write-Host "== Atlassian MCP (Jira / Confluence / Bitbucket) ==" -ForegroundColor Magenta
+
+    $atlassianUrl = "https://mcp.atlassian.com/v2/mcp"
+
+    Ensure-ClaudeCodeCli | Out-Null
+
+    Write-Info "Registrando 'atlassian' no Claude Code (escopo: usuario - vale em qualquer pasta/projeto)..."
+    try { Invoke-Claude mcp remove atlassian --scope user 2>$null | Out-Null } catch {}
+    Invoke-Claude mcp add --transport http --scope user atlassian $atlassianUrl
+
+    # Claude Desktop nao aceita "url" nativo em claude_desktop_config.json;
+    # usa o wrapper mcp-remote (via npx) - mesmo padrao do gateway do GxObjGen.
+    Set-McpServerEntry -ConfigPath $ClaudeDesktopConfig -TopKey "mcpServers" -ServerKey "atlassian" `
+        -EntryValue @{ command = "npx"; args = @("mcp-remote", $atlassianUrl) } -ClientLabel "Claude Desktop" `
+        -WingetId "Anthropic.Claude"
+
+    # VS Code usa "servers" + {type, url} nativamente.
+    Set-McpServerEntry -ConfigPath $VSCodeConfig -TopKey "servers" -ServerKey "atlassian" `
+        -EntryValue @{ type = "http"; url = $atlassianUrl } -ClientLabel "VS Code" `
+        -WingetId "Microsoft.VisualStudioCode"
+
+    Write-Host ""
+    Write-Ok "Atlassian MCP registrado."
+    Write-Warn2 "Falta autenticar: numa sessao do Claude Code na pasta do projeto, rode '/mcp' e siga o login OAuth"
+    Write-Warn2 "que abre no navegador (sua conta Atlassian normal - sem PAT, sem senha digitada aqui)."
+    Write-Info "Depois de autenticado, peca ao agente: 'usando o atlassian, lista minhas issues do Jira atribuidas a mim'."
+}
+
+# ---------------------------------------------------------------------------
+# Opcao 8: habilita/desabilita escrita na KB do GxObjGen (GXOBJGEN_WRITE=1).
 # Por padrao o GxObjGen e deny-by-default: sem essa variavel, o agente so
 # le a KB. Antes isso era 100% manual (o dev tinha que setar a variavel
 # fora do script); agora o script grava/apaga ela como variavel de ambiente
@@ -759,7 +955,7 @@ function Set-GxObjGenWriteMode {
     Broadcast-EnvironmentChange
     Write-Ok "GXOBJGEN_WRITE=1 gravada como variavel de ambiente do usuario (permanente) e o Windows foi avisado da mudanca."
     Write-Warn2 "Feche e reabra o GeneXus para a mudanca valer - a variavel so e lida quando o genexus.exe inicia."
-    Write-Warn2 "Para desligar de novo, rode esta opcao [6] outra vez."
+    Write-Warn2 "Para desligar de novo, rode esta opcao [8] outra vez."
 }
 
 # ---------------------------------------------------------------------------
@@ -768,17 +964,19 @@ function Set-GxObjGenWriteMode {
 function Show-Menu {
     Clear-Host
     Write-Host "========================================" -ForegroundColor DarkGray
-    Write-Host "  Setup MCP GeneXus - Datainfo" -ForegroundColor White
-    Write-Host "  GxObjGen + genexus-mcp + Azure DevOps + Oracle SQLcl" -ForegroundColor White
+    Write-Host "  Setup MCP GeneXus" -ForegroundColor White
+    Write-Host "  GxObjGen + genexus-mcp + Azure DevOps + Oracle SQLcl + SQL Server + Atlassian" -ForegroundColor White
     Write-Host "========================================" -ForegroundColor DarkGray
     Write-Host "  [1] Instalar/registrar GxObjGen (GX15/17/18)"
     Write-Host "  [2] Instalar/registrar genexus-mcp (npm, GX18)"
     Write-Host "  [3] Fazer os dois (1 + 2)"
     Write-Host "  [4] Instalar/registrar Azure DevOps MCP (PAT pessoal)"
     Write-Host "  [5] Instalar/registrar Oracle SQLcl MCP (schema/dados Oracle)"
-    Write-Host "  [6] Habilitar/desabilitar escrita na KB (GXOBJGEN_WRITE)"
-    Write-Host "  [7] Diagnostico / Status"
-    Write-Host "  [8] Sair"
+    Write-Host "  [6] Instalar/registrar SQL Server MCP (schema/dados SQL Server)"
+    Write-Host "  [7] Instalar/registrar Atlassian MCP (Jira/Confluence, OAuth)"
+    Write-Host "  [8] Habilitar/desabilitar escrita na KB (GXOBJGEN_WRITE)"
+    Write-Host "  [9] Diagnostico / Status"
+    Write-Host "  [10] Sair"
     Write-Host "========================================" -ForegroundColor DarkGray
 }
 
@@ -792,9 +990,11 @@ while ($running) {
         "3" { Install-GxObjGen; Install-GenexusMcp; Open-KbAndLaunchClaude; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "4" { Install-AzureDevOpsMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
         "5" { Install-OracleSqlclMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "6" { Set-GxObjGenWriteMode; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "7" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
-        "8" { $running = $false }
+        "6" { Install-SqlServerMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "7" { Install-JiraMcp; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "8" { Set-GxObjGenWriteMode; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "9" { Show-Status; Read-Host "Pressione Enter para voltar ao menu" | Out-Null }
+        "10" { $running = $false }
         default { Write-Warn2 "Opcao invalida"; Start-Sleep -Seconds 1 }
     }
 }
