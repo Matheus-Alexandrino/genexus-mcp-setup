@@ -1,9 +1,9 @@
 @echo off
 REM setup-genexus-mcp.bat
-REM Lancador de 1 clique para o menu de setup da stack de MCPs do dev
-REM GeneXus da Datainfo (GxObjGen + genexus-mcp + Azure DevOps + Oracle
-REM SQLcl). A logica fica em setup-genexus-mcp.ps1, que precisa estar
-REM na mesma pasta que este .bat.
+REM Lancador de 1 clique para o menu de setup da stack de MCPs de um dev
+REM GeneXus (GxObjGen + genexus-mcp + Azure DevOps + Oracle SQLcl + SQL
+REM Server + Atlassian/Jira). A logica fica em setup-genexus-mcp.ps1, que
+REM precisa estar na mesma pasta que este .bat.
 
 setlocal
 set "SCRIPT_DIR=%~dp0"
